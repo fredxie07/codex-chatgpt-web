@@ -1,0 +1,143 @@
+name: Sync compatible upstream release
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: Optional stable upstream tag, for example v6.2.0
+        required: false
+        type: string
+
+permissions:
+  actions: write
+  contents: write
+  issues: write
+
+concurrency:
+  group: compatible-upstream-release
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'fredxie07/codex-chatgpt-web'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - name: Select latest stable upstream release
+        id: upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_TAG: ${{ inputs.upstream_tag }}
+        run: |
+          tag="$REQUESTED_TAG"
+          if [ -z "$tag" ]; then
+            tag="$(gh api repos/miuuyy/codex-chatgpt-web/releases/latest --jq .tag_name)"
+          fi
+          if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Unsupported upstream stable tag: $tag" >&2
+            exit 1
+          fi
+          current="$(jq -r .tag .github/compatible-upstream.json)"
+          if [ "$tag" = "$current" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          newest="$(printf '%s\n%s\n' "$current" "$tag" | sort -V | tail -n 1)"
+          if [ "$newest" != "$tag" ]; then
+            echo "Refusing to move the compatible channel backward from $current to $tag" >&2
+            exit 1
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - name: Fetch and merge upstream release
+        if: steps.upstream.outputs.changed == 'true'
+        id: merge
+        continue-on-error: true
+        env:
+          UPSTREAM_TAG: ${{ steps.upstream.outputs.tag }}
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git remote add upstream https://github.com/miuuyy/codex-chatgpt-web.git
+          git fetch --no-tags upstream "refs/tags/$UPSTREAM_TAG:refs/tags/upstream-$UPSTREAM_TAG"
+          git merge --no-edit --no-ff "refs/tags/upstream-$UPSTREAM_TAG"
+      - name: Report merge conflict
+        if: steps.merge.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_TAG: ${{ steps.upstream.outputs.tag }}
+        run: |
+          conflicts="$(git diff --name-only --diff-filter=U | sed '/^$/d' || true)"
+          git merge --abort || true
+          body="Automatic compatible update for $UPSTREAM_TAG stopped because the upstream release could not be merged safely. Conflicting files:\n\n${conflicts:-unknown}.\n\nNo client update was published."
+          existing="$(gh issue list --state open --search 'Compatible upstream sync failed in:title' --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create --title "Compatible upstream sync failed" --body "$body"
+          fi
+          exit 1
+      - name: Prepare compatible version
+        if: steps.upstream.outputs.changed == 'true'
+        id: compatible
+        env:
+          UPSTREAM_TAG: ${{ steps.upstream.outputs.tag }}
+        run: |
+          version="$(bun run scripts/prepare-compatible-release.ts "$UPSTREAM_TAG")"
+          upstream_commit="$(git rev-parse "refs/tags/upstream-$UPSTREAM_TAG^{commit}")"
+          jq -n \
+            --arg repository miuuyy/codex-chatgpt-web \
+            --arg tag "$UPSTREAM_TAG" \
+            --arg commit "$upstream_commit" \
+            --arg compatibleVersion "$version" \
+            '{repository: $repository, tag: $tag, commit: $commit, compatibleVersion: $compatibleVersion}' \
+            > .github/compatible-upstream.json
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "release_tag=v$version" >> "$GITHUB_OUTPUT"
+      - name: Install dependencies
+        if: steps.upstream.outputs.changed == 'true'
+        run: |
+          bun install --frozen-lockfile
+          bun install --frozen-lockfile --cwd launcher
+      - name: Verify compatible build
+        if: steps.upstream.outputs.changed == 'true'
+        run: bun run verify
+      - name: Commit and publish compatible source
+        if: steps.upstream.outputs.changed == 'true'
+        env:
+          UPSTREAM_TAG: ${{ steps.upstream.outputs.tag }}
+          COMPATIBLE_VERSION: ${{ steps.compatible.outputs.version }}
+          RELEASE_TAG: ${{ steps.compatible.outputs.release_tag }}
+        run: |
+          git add --all
+          git commit -m "Sync $UPSTREAM_TAG as compatible v$COMPATIBLE_VERSION"
+          git tag -a "$RELEASE_TAG" -m "$RELEASE_TAG"
+          git push origin HEAD:main
+          git push origin "$RELEASE_TAG"
+      - name: Build and publish release
+        if: steps.upstream.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.compatible.outputs.release_tag }}
+        run: gh workflow run release.yml --ref main -f release_tag="$RELEASE_TAG"
+      - name: Report verification or publication failure
+        if: failure() && steps.upstream.outputs.changed == 'true' && steps.merge.outcome != 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_TAG: ${{ steps.upstream.outputs.tag }}
+        run: |
+          body="Automatic compatible update for $UPSTREAM_TAG failed during version preparation, verification, or publication. No unverified client update was published. Inspect this workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          existing="$(gh issue list --state open --search 'Compatible upstream sync failed in:title' --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create --title "Compatible upstream sync failed" --body "$body"
+          fi

@@ -4,8 +4,13 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 const { pipeline } = require("node:stream/promises");
+const {
+  RELEASE_CONTRACT_ASSET,
+  UPDATE_REPOSITORY,
+  validateReleaseContract,
+} = require("./release-contract.cjs");
 
-const REPOSITORY = "miuuyy/codex-chatgpt-web";
+const REPOSITORY = UPDATE_REPOSITORY;
 const RELEASE_API_URL = `https://api.github.com/repos/${REPOSITORY}/releases/latest`;
 const USER_AGENT = "codex-web-gpt-launcher-updater";
 const MAX_REDIRECTS = 5;
@@ -350,14 +355,16 @@ function createUpdateController({
       const assets = Array.isArray(release?.assets) ? release.assets : [];
       const asset = assets.find((item) => item?.name === assetName);
       const checksums = assets.find((item) => item?.name === "checksums.txt");
-      if (!asset?.browser_download_url || !checksums?.browser_download_url) {
-        throw new Error(`Release v${version} is missing ${assetName} or checksums.txt`);
+      const contract = assets.find((item) => item?.name === RELEASE_CONTRACT_ASSET);
+      if (!asset?.browser_download_url || !checksums?.browser_download_url || !contract?.browser_download_url) {
+        throw new Error(`Release v${version} is missing ${assetName}, checksums.txt, or ${RELEASE_CONTRACT_ASSET}`);
       }
       candidate = {
         version,
         assetName,
         assetUrl: validateReleaseAssetUrl(asset.browser_download_url, version, assetName),
         checksumsUrl: validateReleaseAssetUrl(checksums.browser_download_url, version, "checksums.txt"),
+        contractUrl: validateReleaseAssetUrl(contract.browser_download_url, version, RELEASE_CONTRACT_ASSET),
       };
       logger?.info("launcher.update_available", { currentVersion, version, platform, arch });
       return transition({ status: "available", version });
@@ -391,6 +398,13 @@ function createUpdateController({
       const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-update-"));
       try {
         const checksums = await deps.downloadText(available.checksumsUrl);
+        const contractContents = await deps.downloadText(available.contractUrl);
+        const contractExpected = expectedChecksum(checksums, RELEASE_CONTRACT_ASSET);
+        const contractActual = crypto.createHash("sha256").update(contractContents).digest("hex");
+        if (contractActual !== contractExpected) {
+          throw new Error(`SHA-256 verification failed for ${RELEASE_CONTRACT_ASSET}`);
+        }
+        validateReleaseContract(contractContents, available.version);
         const expected = expectedChecksum(checksums, available.assetName);
         const assetPath = path.join(tempRoot, available.assetName);
         await deps.downloadFile(available.assetUrl, assetPath);

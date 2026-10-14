@@ -6,6 +6,7 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { EventEmitter } = require("node:events");
 const { PassThrough } = require("node:stream");
+const { createReleaseContract } = require("../electron/release-contract.cjs");
 const {
   buildJob,
   compareVersions,
@@ -16,6 +17,8 @@ const {
   releaseAssetName,
   validateReleaseAssetUrl,
 } = require("../electron/update.cjs");
+
+const contractText = version => `${JSON.stringify(createReleaseContract(version))}\n`;
 
 test("Linux auto-update fails closed without the stable installer wrapper", () => {
   const previousAppImage = process.env.CODEX_WEB_GPT_APPIMAGE;
@@ -61,9 +64,9 @@ test("unsupported Linux launches reject updates before downloading or changing s
         dependencies: {
           fetchRelease: async () => ({
             tag_name: "v1.2.0",
-            assets: ["codex-web-gpt-1.2.0-linux-x64.AppImage", "checksums.txt"].map(name => ({
+            assets: ["codex-web-gpt-1.2.0-linux-x64.AppImage", "checksums.txt", "release-contract.json"].map(name => ({
               name,
-              browser_download_url: `https://github.com/miuuyy/codex-chatgpt-web/releases/download/v1.2.0/${name}`,
+              browser_download_url: `https://github.com/fredxie07/codex-chatgpt-web/releases/download/v1.2.0/${name}`,
             })),
           }),
           downloadText: async () => { calls.push("checksums"); throw new Error("Unexpected download"); },
@@ -105,11 +108,11 @@ test("checksums and release URLs bind the exact expected asset", () => {
   assert.throws(() => expectedChecksum(`${hash}  other.zip\n`, "launcher.zip"), /no entry/);
   assert.equal(
     validateReleaseAssetUrl(
-      "https://github.com/miuuyy/codex-chatgpt-web/releases/download/v1.2.0/launcher.zip",
+      "https://github.com/fredxie07/codex-chatgpt-web/releases/download/v1.2.0/launcher.zip",
       "1.2.0",
       "launcher.zip",
     ),
-    "https://github.com/miuuyy/codex-chatgpt-web/releases/download/v1.2.0/launcher.zip",
+    "https://github.com/fredxie07/codex-chatgpt-web/releases/download/v1.2.0/launcher.zip",
   );
   assert.throws(
     () => validateReleaseAssetUrl("https://example.com/launcher.zip", "1.2.0", "launcher.zip"),
@@ -145,11 +148,15 @@ test("startup check runs once and exposes only a newer complete release", async 
           assets: [
             {
               name: "codex-web-gpt-1.2.0-linux-x64.AppImage",
-              browser_download_url: "https://github.com/miuuyy/codex-chatgpt-web/releases/download/v1.2.0/codex-web-gpt-1.2.0-linux-x64.AppImage",
+              browser_download_url: "https://github.com/fredxie07/codex-chatgpt-web/releases/download/v1.2.0/codex-web-gpt-1.2.0-linux-x64.AppImage",
             },
             {
               name: "checksums.txt",
-              browser_download_url: "https://github.com/miuuyy/codex-chatgpt-web/releases/download/v1.2.0/checksums.txt",
+              browser_download_url: "https://github.com/fredxie07/codex-chatgpt-web/releases/download/v1.2.0/checksums.txt",
+            },
+            {
+              name: "release-contract.json",
+              browser_download_url: "https://github.com/fredxie07/codex-chatgpt-web/releases/download/v1.2.0/release-contract.json",
             },
           ],
         };
@@ -162,12 +169,45 @@ test("startup check runs once and exposes only a newer complete release", async 
   assert.deepEqual(published.map((state) => state.status), ["checking", "available"]);
 });
 
+test("an update without the existing-Chrome compatibility contract is never installed", async () => {
+  const version = "1.2.0";
+  const incompatible = `${JSON.stringify({ schemaVersion: 1, version, features: [] })}\n`;
+  const incompatibleHash = require("node:crypto").createHash("sha256").update(incompatible).digest("hex");
+  let downloadedBinary = false;
+  const controller = createUpdateController({
+    currentVersion: "1.1.4",
+    platform: "darwin",
+    arch: "arm64",
+    packaged: true,
+    executablePath: "/Applications/Codex Web GPT.app/Contents/MacOS/Codex Web GPT",
+    runtimeExecutable: "/tmp/bun",
+    logsDirectory: "/tmp/logs",
+    dependencies: {
+      fetchRelease: async () => ({
+        tag_name: `v${version}`,
+        assets: ["codex-web-gpt-1.2.0-mac-arm64.zip", "checksums.txt", "release-contract.json"].map(name => ({
+          name,
+          browser_download_url: `https://github.com/fredxie07/codex-chatgpt-web/releases/download/v${version}/${name}`,
+        })),
+      }),
+      downloadText: async url => url.endsWith("release-contract.json")
+        ? incompatible
+        : `${"a".repeat(64)}  codex-web-gpt-1.2.0-mac-arm64.zip\n${incompatibleHash}  release-contract.json\n`,
+      downloadFile: async () => { downloadedBinary = true; },
+    },
+  });
+  assert.deepEqual(await controller.checkOnce(), { status: "available", version });
+  await assert.rejects(controller.beginInstall(), /missing required feature existing-chrome-auth-v1/);
+  assert.equal(downloadedBinary, false);
+  assert.deepEqual(controller.getState(), { status: "available", version });
+});
+
 test("a failed startup check is retried on a bounded schedule; a successful one is not repeated", async () => {
   const release = {
     tag_name: "v1.2.0",
-    assets: ["codex-web-gpt-1.2.0-linux-x64.AppImage", "checksums.txt"].map(name => ({
+    assets: ["codex-web-gpt-1.2.0-linux-x64.AppImage", "checksums.txt", "release-contract.json"].map(name => ({
       name,
-      browser_download_url: `https://github.com/miuuyy/codex-chatgpt-web/releases/download/v1.2.0/${name}`,
+      browser_download_url: `https://github.com/fredxie07/codex-chatgpt-web/releases/download/v1.2.0/${name}`,
     })),
   };
   const controllerFor = (retryDelaysMs, fetchRelease, logged = []) => createUpdateController({
@@ -222,9 +262,9 @@ test("preview and draft releases stay hidden until promoted, regardless of the v
         dependencies: {
           fetchRelease: async () => ({
             tag_name: `v${tag}`, ...flags,
-            assets: [`codex-web-gpt-${tag}-linux-x64.AppImage`, "checksums.txt"].map(name => ({
+            assets: [`codex-web-gpt-${tag}-linux-x64.AppImage`, "checksums.txt", "release-contract.json"].map(name => ({
               name,
-              browser_download_url: `https://github.com/miuuyy/codex-chatgpt-web/releases/download/v${tag}/${name}`,
+              browser_download_url: `https://github.com/fredxie07/codex-chatgpt-web/releases/download/v${tag}/${name}`,
             })),
           }),
         },
@@ -269,15 +309,24 @@ for (const arch of ["x64", "arm64"]) {
             assets: [
               {
                 name: `codex-web-gpt-1.2.0-linux-${arch}.AppImage`,
-                browser_download_url: `https://github.com/miuuyy/codex-chatgpt-web/releases/download/v1.2.0/codex-web-gpt-1.2.0-linux-${arch}.AppImage`,
+                browser_download_url: `https://github.com/fredxie07/codex-chatgpt-web/releases/download/v1.2.0/codex-web-gpt-1.2.0-linux-${arch}.AppImage`,
               },
               {
                 name: "checksums.txt",
-                browser_download_url: "https://github.com/miuuyy/codex-chatgpt-web/releases/download/v1.2.0/checksums.txt",
+                browser_download_url: "https://github.com/fredxie07/codex-chatgpt-web/releases/download/v1.2.0/checksums.txt",
+              },
+              {
+                name: "release-contract.json",
+                browser_download_url: "https://github.com/fredxie07/codex-chatgpt-web/releases/download/v1.2.0/release-contract.json",
               },
             ],
           }),
-          downloadText: async () => `${hash}  codex-web-gpt-1.2.0-linux-${arch}.AppImage\n`,
+          downloadText: async url => {
+            const contract = contractText("1.2.0");
+            if (url.endsWith("release-contract.json")) return contract;
+            const contractHash = require("node:crypto").createHash("sha256").update(contract).digest("hex");
+            return `${hash}  codex-web-gpt-1.2.0-linux-${arch}.AppImage\n${contractHash}  release-contract.json\n`;
+          },
           downloadFile: async (_url, destination) => fs.writeFileSync(destination, assetBody),
           sha256: (filePath) => require("node:crypto").createHash("sha256").update(fs.readFileSync(filePath)).digest("hex"),
           spawnWorker: (runtime, worker, job) => {

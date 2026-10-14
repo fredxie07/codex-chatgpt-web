@@ -107,6 +107,7 @@ test("release installers resolve checksummed native launcher assets", () => {
 
 test("packaged launcher owns a detached checksummed updater for every release platform", () => {
   const updater = fs.readFileSync(path.join(launcherRoot, "electron", "update.cjs"), "utf8");
+  const contract = fs.readFileSync(path.join(launcherRoot, "electron", "release-contract.cjs"), "utf8");
   const worker = fs.readFileSync(path.join(launcherRoot, "electron", "update-worker.cjs"), "utf8");
   for (const platform of ["darwin", "win32", "linux"]) {
     assert.match(updater, new RegExp(`platform === "${platform}"`));
@@ -114,6 +115,9 @@ test("packaged launcher owns a detached checksummed updater for every release pl
   }
   assert.match(updater, /expectedChecksum/);
   assert.match(updater, /SHA-256 verification failed/);
+  assert.match(updater, /validateReleaseContract/);
+  assert.match(contract, /fredxie07\/codex-chatgpt-web/);
+  assert.match(contract, /existing-chrome-auth-v1/);
   assert.match(updater, /detached:\s*true/);
   assert.match(worker, /waitForParent/);
   assert.doesNotMatch(worker, /backup/i);
@@ -218,6 +222,8 @@ test("CI packages and smoke-launches on macOS, Windows, and Linux", () => {
   assert.match(release, /prepare-windows-baseline-bun\.ps1 -Version 1\.4\.0/);
   assert.match(release, /codesign --verify --deep --strict --verbose=2/);
   assert.match(release, /Codex Web GPT\.app/);
+  assert.match(release, /write-release-contract\.cjs/);
+  assert.ok(release.indexOf("write-release-contract.cjs") < release.indexOf("Create checksums"));
   assert.doesNotMatch(release, /gh release create[\s\S]*?--draft/);
 });
 

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -7,6 +7,7 @@ import {
   captureSystemBrowserLogin,
   loginToChatGpt,
   loginVerificationMarkerPath,
+  parseChromeDevToolsActivePort,
   sanitizeBrowserLoginStorageState,
 } from "../src/browser-login";
 import { CHATGPT_TEMPORARY_CHAT_URL } from "../src/chatgpt-session";
@@ -41,62 +42,84 @@ test("login starts with normal Chrome and captures state in a headed Keychain-aw
   }
 });
 
-test("passkey login authenticates in normal Chrome before isolated offline pipe capture", async () => {
+test("existing-session login opens regular Chrome without replacing its user-data directory", async () => {
   if (process.platform !== "darwin") return;
-  const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-passkey-login-"));
+  const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-existing-chrome-login-"));
   const executable = join(root, "fake-chrome");
   const argsLog = join(root, "args.log");
-  const pidLog = join(root, "pid.log");
   writeFileSync(executable, [
     "#!/bin/sh",
     "printf '%s\\n' \"$*\" >> \"$CODEX_LOGIN_ARG_LOG\"",
-    "case \"$*\" in",
-    "  *--remote-debugging-pipe*) exit 0 ;;",
-    "esac",
-    "printf '%s\\n' \"$$\" > \"$CODEX_LOGIN_PID_LOG\"",
-    "trap 'exit 0' TERM INT HUP",
-    "while :; do sleep 1; done",
+    "exit 0",
     "",
   ].join("\n"), { mode: 0o700 });
   chmodSync(executable, 0o700);
   const previousArgs = process.env.CODEX_LOGIN_ARG_LOG;
-  const previousPid = process.env.CODEX_LOGIN_PID_LOG;
   process.env.CODEX_LOGIN_ARG_LOG = argsLog;
-  process.env.CODEX_LOGIN_PID_LOG = pidLog;
   try {
     const config = defaultConfig("browser-only");
     config.chromeExecutablePath = executable;
     config.storageStatePath = join(root, "transfer", "storage-state.json");
-    let continueLogin!: () => void;
-    const continuation = new Promise<void>(resolve => { continueLogin = resolve; });
     let browserReady = false;
-    const capture = captureSystemBrowserLogin(config, { continuation, timeoutMs: 5_000,
-      onBrowserReady: () => { browserReady = true; } });
-    for (let attempt = 0; attempt < 100 && !existsSync(pidLog); attempt += 1) {
+    const error = await captureSystemBrowserLogin(config, {
+      continuation: Promise.resolve(),
+      timeoutMs: 250,
+      chromeUserDataDir: join(root, "Chrome"),
+      onBrowserReady: () => { browserReady = true; },
+    }).then(() => undefined, caught => caught as Error);
+    expect(error?.message).toContain("Remote Debugging is not enabled");
+
+    for (let attempt = 0; attempt < 100 && !existsSync(argsLog); attempt += 1) {
       await new Promise(resolve => setTimeout(resolve, 10));
     }
-    expect(existsSync(pidLog)).toBe(true);
     expect(browserReady).toBe(true);
-    continueLogin();
-    const error = await capture.then(() => undefined, caught => caught as Error);
-    expect(error).toBeInstanceOf(Error);
-
     const launches = readFileSync(argsLog, "utf8").trim().split("\n");
-    expect(launches).toHaveLength(2);
+    expect(launches).toHaveLength(1);
     expect(launches[0]).toContain("--new-window");
-    expect(launches[0]).toContain("--user-data-dir=");
+    expect(launches[0]).toContain("chrome://inspect/#remote-debugging");
+    expect(launches[0]).toContain(CHATGPT_TEMPORARY_CHAT_URL);
+    expect(launches[0]).not.toContain("--user-data-dir=");
     expect(launches[0]).not.toContain("--remote-debugging-pipe");
-    expect(launches[0]).not.toContain("--enable-automation");
-    expect(launches[1]).toContain("--remote-debugging-pipe");
-    expect(launches[1]).toContain("--headless");
-    expect(launches[1]).toContain("--restore-last-session");
-    expect(launches[1]).toContain("--disable-background-networking");
-    expect(readdirSync(join(root, "transfer")).filter(name => name.startsWith("login-profile-"))).toEqual([]);
   } finally {
     if (previousArgs === undefined) delete process.env.CODEX_LOGIN_ARG_LOG;
     else process.env.CODEX_LOGIN_ARG_LOG = previousArgs;
-    if (previousPid === undefined) delete process.env.CODEX_LOGIN_PID_LOG;
-    else process.env.CODEX_LOGIN_PID_LOG = previousPid;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Chrome DevTools active-port parsing accepts only a loopback port and browser path", () => {
+  expect(parseChromeDevToolsActivePort("9222\n/devtools/browser/abc-123\n"))
+    .toBe("ws://127.0.0.1:9222/devtools/browser/abc-123");
+  expect(() => parseChromeDevToolsActivePort("0\n/devtools/browser/abc\n"))
+    .toThrow("invalid remote-debugging port");
+  expect(() => parseChromeDevToolsActivePort("9222\nws://attacker.example/browser\n"))
+    .toThrow("invalid remote-debugging connection details");
+});
+
+test("existing-session login waits for Chrome to enable remote debugging after Continue", async () => {
+  if (process.platform !== "darwin") return;
+  const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-delayed-chrome-port-"));
+  const executable = join(root, "fake-chrome");
+  const chromeUserDataDir = join(root, "Chrome");
+  writeFileSync(executable, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+  chmodSync(executable, 0o700);
+  mkdirSync(chromeUserDataDir, { recursive: true });
+  try {
+    const config = defaultConfig("browser-only");
+    config.chromeExecutablePath = executable;
+    config.storageStatePath = join(root, "transfer", "storage-state.json");
+    const delayedPort = setTimeout(() => {
+      writeFileSync(join(chromeUserDataDir, "DevToolsActivePort"), "9\n/devtools/browser/delayed\n");
+    }, 100);
+    const error = await captureSystemBrowserLogin(config, {
+      continuation: Promise.resolve(),
+      timeoutMs: 1_000,
+      chromeUserDataDir,
+    }).then(() => undefined, caught => caught as Error);
+    clearTimeout(delayedPort);
+    expect(error?.message).not.toContain("Remote Debugging is not enabled");
+    expect(error?.message).toContain("Chrome did not approve the connection");
+  } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });

@@ -308,7 +308,7 @@ class RuntimeHost {
       || child.exitCode !== null
       || child.signalCode !== null
       || !child.stdin?.writable) {
-      throw new Error("No passkey sign-in is waiting for Continue");
+      throw new Error("No existing-Chrome authorization is waiting for Continue");
     }
     this.passkeyContinuationRequested = true;
     this.passkeyPhase = "importing";
@@ -316,7 +316,7 @@ class RuntimeHost {
     this.publishOperation?.({
       name: "passkey-login",
       status: "running",
-      message: "Capturing and verifying the passkey session",
+      message: "Capturing and verifying the approved Chrome session",
     });
     return new Promise((resolve, reject) => {
       child.stdin.write(
@@ -371,27 +371,27 @@ class RuntimeHost {
             return true;
           }
         },
-        message: "Sign in with your passkey in Chrome, then return here and choose Continue",
-        successMessage: "Passkey session captured for private Launcher verification",
+        message: "Authorize with your existing Chrome session, then return here and choose Continue",
+        successMessage: "Existing Chrome session captured for private Launcher verification",
         timeoutMs: PASSKEY_LOGIN_TIMEOUT_MS,
       });
       const stateStat = fs.lstatSync(storageStatePath);
       if (!stateStat.isFile() || stateStat.size < 1 || stateStat.size > MAX_PASSKEY_STATE_FILE_BYTES) {
-        throw new Error("Passkey sign-in returned an invalid storage-state file");
+        throw new Error("Existing Chrome authorization returned an invalid storage-state file");
       }
       const markerStat = fs.lstatSync(markerPath);
       if (!markerStat.isFile() || markerStat.size < 1 || markerStat.size > MAX_PASSKEY_MARKER_FILE_BYTES) {
-        throw new Error("Passkey sign-in returned invalid capture evidence");
+        throw new Error("Existing Chrome authorization returned invalid capture evidence");
       }
       const marker = JSON.parse(fs.readFileSync(markerPath, "utf8"));
       const capturedAt = typeof marker?.capturedAt === "string" ? Date.parse(marker.capturedAt) : Number.NaN;
       if (marker?.version !== 1
         || marker?.captureComplete !== true
-        || marker?.source !== "isolated-normal-browser-profile"
+        || marker?.source !== "user-approved-existing-chrome"
         || !Number.isFinite(capturedAt)
         || capturedAt < Date.now() - PASSKEY_LOGIN_TIMEOUT_MS - 60_000
         || capturedAt > Date.now() + 60_000) {
-        throw new Error("Passkey sign-in did not return completed capture evidence");
+        throw new Error("Existing Chrome authorization did not return completed capture evidence");
       }
       return { storageState: JSON.parse(fs.readFileSync(storageStatePath, "utf8")), cleanup };
     } catch (error) {

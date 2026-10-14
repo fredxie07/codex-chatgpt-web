@@ -12,6 +12,7 @@ export const CHATGPT_COMPOSER_SELECTOR = [
   "#prompt-textarea",
   '[contenteditable="true"][data-lexical-editor="true"]',
   'form[data-chatgpt-composer] [data-composer-markdown][contenteditable="true"][role="textbox"]',
+  'form [contenteditable="true"][role="textbox"][aria-label]',
 ].join(", ");
 export const CHATGPT_EFFORT_CONTROL_SELECTOR = [
   'button[aria-haspopup="menu"][data-tone="neutral"]',

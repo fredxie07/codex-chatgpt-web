@@ -1282,7 +1282,7 @@ test("failed terminal migration restores removed launchd ownership before verify
   }
 });
 
-test("macOS passkey capture uses an isolated launcher-controlled transfer", async () => {
+test("macOS existing-Chrome capture uses an isolated launcher-controlled transfer", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-passkey-runtime-"));
   const chrome = path.join(root, "Google Chrome");
   fs.writeFileSync(chrome, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
@@ -1312,7 +1312,7 @@ test("macOS passkey capture uses an isolated launcher-controlled transfer", asyn
     fs.writeFileSync(`${statePath}.verified.json`, `${JSON.stringify({
       version: 1,
       captureComplete: true,
-      source: "isolated-normal-browser-profile",
+      source: "user-approved-existing-chrome",
       capturedAt: new Date().toISOString(),
     })}\n`, { mode: 0o600 });
     return { code: 0, stdout: "", stderr: "" };
@@ -1352,7 +1352,7 @@ test("passkey Continue is delivered only to the active owned login child", async
       },
     },
   };
-  assert.throws(() => fixture.continuePasskeyLogin(), /No passkey sign-in is waiting/);
+  assert.throws(() => fixture.continuePasskeyLogin(), /No existing-Chrome authorization is waiting/);
   assert.equal(written, "");
   fixture.passkeyPhase = "waiting";
   const phases = [];
@@ -1360,7 +1360,7 @@ test("passkey Continue is delivered only to the active owned login child", async
   assert.equal(await fixture.continuePasskeyLogin(), true);
   assert.deepEqual(phases, ["importing"]);
   assert.deepEqual(JSON.parse(written), { version: 1, type: "passkey-login-continue" });
-  assert.throws(() => fixture.continuePasskeyLogin(), /No passkey sign-in is waiting/);
+  assert.throws(() => fixture.continuePasskeyLogin(), /No existing-Chrome authorization is waiting/);
 });
 
 test("passkey sign-in is rejected outside macOS even if IPC is invoked directly", () => {

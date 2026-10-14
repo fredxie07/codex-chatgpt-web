@@ -3,6 +3,15 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing compatible tag to build and publish
+        required: true
+        type: string
+
+env:
+  RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
 
 permissions:
   contents: write
@@ -26,6 +35,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.0
@@ -92,6 +103,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.0
@@ -106,7 +119,7 @@ jobs:
       - name: Verify release tag matches package version
         run: |
           expected="v$(jq -r .version package.json)"
-          test "$GITHUB_REF_NAME" = "$expected"
+          test "$RELEASE_TAG" = "$expected"
       - name: Add licenses and installers
         run: |
           cp LICENSE release-assets/LICENSE
@@ -128,6 +141,8 @@ jobs:
             mv "$file" "$name"
           done < <(find . -mindepth 2 -type f -print0 | sort -z)
           find . -mindepth 1 -type d -empty -delete
+      - name: Add compatible-update contract
+        run: node launcher/scripts/write-release-contract.cjs "$(jq -r .version package.json)" release-assets
       - name: Create checksums
         run: |
           cd release-assets
@@ -159,10 +174,10 @@ jobs:
           mapfile -d '' release_files < <(find release-assets -type f -print0)
           test "${#release_files[@]}" -gt 0
           release_flags=(--latest)
-          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+          if [[ "$RELEASE_TAG" == *-* ]]; then
             release_flags=(--prerelease --latest=false)
           fi
-          if existing_release="$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isPrerelease 2>/dev/null)"; then
+          if existing_release="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isPrerelease 2>/dev/null)"; then
             # A maintainer can stage a final-version tag as a public preview before building it.
             # Rebuilding its assets must not silently promote that release to old launchers.
             if jq -e '.isPrerelease == true' <<< "$existing_release" >/dev/null; then
@@ -170,23 +185,23 @@ jobs:
             else
               release_flags=(--prerelease=false --latest)
             fi
-            gh release upload "$GITHUB_REF_NAME" "${release_files[@]}" \
+            gh release upload "$RELEASE_TAG" "${release_files[@]}" \
               --repo "$GITHUB_REPOSITORY" \
               --clobber
-            gh release edit "$GITHUB_REF_NAME" \
+            gh release edit "$RELEASE_TAG" \
               --repo "$GITHUB_REPOSITORY" \
               --draft=false \
               "${release_flags[@]}"
           else
-            gh release create "$GITHUB_REF_NAME" "${release_files[@]}" \
+            gh release create "$RELEASE_TAG" "${release_files[@]}" \
               --repo "$GITHUB_REPOSITORY" \
-              --title "$GITHUB_REF_NAME" \
+              --title "$RELEASE_TAG" \
               "${release_flags[@]}" \
               --generate-notes
           fi
 
           published_manifest="$(mktemp)"
-          gh release view "$GITHUB_REF_NAME" \
+          gh release view "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --json assets \
             --jq '.assets[] | select(.name != "checksums.txt") | [.name, .digest] | @tsv' \
@@ -200,7 +215,7 @@ jobs:
             | LC_ALL=C sort -k2 > "$published_manifest"
           test -s "$published_manifest"
           mv "$published_manifest" release-assets/checksums.txt
-          gh release upload "$GITHUB_REF_NAME" release-assets/checksums.txt \
+          gh release upload "$RELEASE_TAG" release-assets/checksums.txt \
             --repo "$GITHUB_REPOSITORY" \
             --clobber
 
@@ -211,13 +226,13 @@ jobs:
               echo "Published asset checksum mismatch: $name" >&2
               exit 1
             fi
-          done < <(gh release view "$GITHUB_REF_NAME" \
+          done < <(gh release view "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --json assets \
             --jq '.assets[] | [.name, .digest] | @tsv')
 
           local_manifest_digest="$(sha256sum release-assets/checksums.txt | awk '{ print $1 }')"
-          remote_manifest_digest="$(gh release view "$GITHUB_REF_NAME" \
+          remote_manifest_digest="$(gh release view "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --json assets \
             --jq '.assets[] | select(.name == "checksums.txt") | .digest')"

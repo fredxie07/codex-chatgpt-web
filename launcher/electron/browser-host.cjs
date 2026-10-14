@@ -2740,7 +2740,7 @@ class BrowserHost {
   }
 
   openPasskeyLogin() {
-    requireAutomaticBrowserInspection(this, "Automated ChatGPT passkey import");
+    requireAutomaticBrowserInspection(this, "Existing Chrome authorization import");
     if (this.state.authenticated) {
       this.activateHomeSurface();
       this.show();
@@ -2784,7 +2784,7 @@ class BrowserHost {
     if (this.authView) this.closeAuthView(this.authView, true, false);
     this.hide();
     this.setState({ authenticated: false, status: "loading", passkeyPhase: "opening",
-      message: "Opening Chrome for passkey sign-in", loading: true });
+      message: "Opening your regular Chrome for authorization", loading: true });
     this.logger.info("browser.passkey_login_started");
     const transfer = await this.loginWithPasskey(passkeyPhase => this.setState({ passkeyPhase }));
     this.setState({ passkeyPhase: "importing" });
