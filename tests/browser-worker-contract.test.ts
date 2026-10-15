@@ -171,6 +171,68 @@ test("assistant tracking rebinds only one proven replacement after React detache
   )).toThrow("2 new conversation turns");
 });
 
+test("assistant tracking rebinds when ChatGPT rekeys the accepted user and assistant pair", async () => {
+  const submittedText = "Which model are you?";
+  let renderedText = submittedText;
+  const oldAssistant = { count: async () => 0 };
+  const newAssistant = {
+    evaluate: async (callback: Function, submitted: string) => {
+      const message = { innerText: renderedText };
+      const group = {
+        querySelectorAll: (selector: string) => selector === "[data-user-message-bubble]"
+          ? [{ querySelectorAll: (contentSelector: string) => contentSelector === "[data-search-result-target]" ? [message] : [] }]
+          : [],
+      };
+      return callback(group, submitted);
+    },
+  };
+  const page = { locator: () => newAssistant } as unknown as Page;
+  const worker = Object.create(ChatGptBrowserWorker.prototype) as any;
+  worker.reconcileMultipartHistory = async () => {};
+  worker.submissionDomState = async () => ({
+    userTurnCount: 1,
+    assistantTurnCount: 1,
+    visibleStopButtonCount: 0,
+    turnIdentities: ["group:user:new", "group:assistant:new"],
+    userIdentities: ["group:user:new"],
+    responseIdentities: ["group:assistant:new"],
+  });
+
+  await expect(worker.reconcileAssistantTurnBinding(
+    page,
+    {
+      initialTurnIdentities: [],
+      domCache: {},
+      acceptedUserIdentity: "group:user:old",
+      submittedText,
+    },
+    {
+      identity: "group:assistant:old",
+      locator: oldAssistant,
+      acceptedTurnIdentities: ["group:user:old", "group:assistant:old"],
+    },
+  )).resolves.toMatchObject({
+    identity: "group:assistant:new",
+    locator: newAssistant,
+  });
+
+  renderedText = "A different user turn";
+  await expect(worker.reconcileAssistantTurnBinding(
+    page,
+    {
+      initialTurnIdentities: [],
+      domCache: {},
+      acceptedUserIdentity: "group:user:old",
+      submittedText,
+    },
+    {
+      identity: "group:assistant:old",
+      locator: oldAssistant,
+      acceptedTurnIdentities: ["group:user:old", "group:assistant:old"],
+    },
+  )).rejects.toThrow("ChatGPT opened another user turn");
+});
+
 test("power turn identity separates roles and keeps virtualized groups in the submission baseline", async () => {
   const { createWindow } = require("@mixmark-io/domino");
   const window = createWindow('<div data-turn-id-container="legacy"><section data-testid="conversation-turn-0" data-turn="assistant" data-turn-id="legacy"></section></div><div data-turn-key="history"></div><div data-turn-key="previous"><div data-user-message-bubble></div><h4 data-conversation-role="assistant"></h4><div data-turn-id-container="search-only"><section data-testid="conversation-turn-search" data-turn="assistant"><div data-message-author-role="assistant"></div></section></div></div>');

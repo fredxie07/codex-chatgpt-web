@@ -3307,9 +3307,8 @@ export class ChatGptBrowserWorker {
       let matches = false;
       if (replacement) {
         const locator = page.locator(chatGptAssistantTurnSelector(identity!));
-        matches = baseline.acceptedUserIdentity
-          ? user === baseline.acceptedUserIdentity
-          : Boolean(baseline.submittedText) && await withChatGptBrowserObservationTimeout(withBrowserTurnAbort(locator.evaluate((group, submitted) => {
+        matches = user === baseline.acceptedUserIdentity
+          || Boolean(baseline.submittedText) && await withChatGptBrowserObservationTimeout(withBrowserTurnAbort(locator.evaluate((group, submitted) => {
           const bubbles = group.querySelectorAll<HTMLElement>("[data-user-message-bubble]");
           const contents = bubbles.length === 1
             ? bubbles[0]!.querySelectorAll<HTMLElement>("[data-search-result-target]")
